@@ -1,7 +1,19 @@
-use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW};
+use windows::{
+    Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW},
+    core::PCWSTR,
+};
 
 /// Maximum valid ASCII value
 const ASCII_MAX: u8 = 127;
+
+/// Drive type constants from Windows API
+const DRIVE_UNKNOWN: u32 = 0;
+const DRIVE_NO_ROOT_DIR: u32 = 1;
+const DRIVE_REMOVABLE: u32 = 2;
+const DRIVE_FIXED: u32 = 3;
+const DRIVE_REMOTE: u32 = 4;
+const DRIVE_CDROM: u32 = 5;
+const DRIVE_RAMDISK: u32 = 6;
 
 /// The type of bus a removable device is connected through.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,8 +83,15 @@ fn logical_drive_letters() -> Vec<String> {
 
 /// Returns true if the drive at `root` is removable.
 fn is_removable(root: &str) -> bool {
-    // TODO: encode `root` as a null-terminated wide string (PCWSTR),
+    // Encode `root` as a null-terminated wide string (PCWSTR),
     // call GetDriveTypeW(), and return true when the result == DRIVE_REMOVABLE.
+    let as_words = root.encode_utf16().chain([0u16]).collect::<Vec<u16>>();
+    let as_pcwstr = PCWSTR(as_words.as_ptr());
+
+    if unsafe { GetDriveTypeW(as_pcwstr) == DRIVE_REMOVABLE } {
+        return true;
+    }
+
     false
 }
 
