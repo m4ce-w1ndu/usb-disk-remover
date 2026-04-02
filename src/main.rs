@@ -1,8 +1,11 @@
 // USB Disk Remover
 // A portable Windows utility to safely eject removable drives.
 
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]  // commented out during development so stdout is visible
+
+mod drives;
 
 fn main() {
-    // TODO: initialise GUI
+    let drives = drives::enumerate_drives();
+    println!("{:#?}", drives);
 }
