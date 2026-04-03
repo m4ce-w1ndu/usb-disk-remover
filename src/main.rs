@@ -4,6 +4,7 @@
 // #![windows_subsystem = "windows"]  // commented out during development so stdout is visible
 
 mod drives;
+mod utils;
 
 fn main() {
     let drives = drives::enumerate_drives();
