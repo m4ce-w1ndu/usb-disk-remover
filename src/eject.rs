@@ -1,3 +1,4 @@
+use crate::drives::enumerate_drives;
 use crate::{drives::RemovableDrive, utils::str_to_utf16vec};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_Get_Device_Interface_List_SizeW,
@@ -40,19 +41,35 @@ pub enum EjectError {
 
 /// Ejects the device leveraging Windows' PnP manager.
 pub fn eject_drive(drive: &RemovableDrive) -> Result<(), EjectError> {
-    let handle = open_volume(&drive.mount_point)?;
-    println!("handle ok");
-    let result = lock_volume(handle).and_then(|_| dismount_volume(handle));
-    unsafe {
-        _ = CloseHandle(handle);
-    };
-    result?;
-    println!("lock/dismount ok");
+    // Get all drives
+    let drives = enumerate_drives();
+
+    // Get drive device number
+    let target_dev_number =
+        query_device_info(&drive.mount_point).ok_or(EjectError::DeviceNotFound)?;
+
+    // Find and collect their device number
+    let siblings: Vec<&RemovableDrive> = drives
+        .iter()
+        .filter_map(|d| {
+            let num = query_device_info(&d.mount_point)?;
+            (num.DeviceNumber == target_dev_number.DeviceNumber).then_some(d)
+        })
+        .collect();
+
+    // Lock and dismout all drives
+    for drive in siblings {
+        let handle = open_volume(&drive.mount_point)?;
+        let result = lock_volume(handle).and_then(|_| dismount_volume(handle));
+        unsafe {
+            _ = CloseHandle(handle);
+        };
+        result?;
+    }
 
     let devinst = get_device_node(&drive.mount_point)?;
-    println!("device node: {}", devinst);
     let parent = get_parent_node(devinst)?;
-    println!("parent node: {}", parent);
+
     request_eject(parent)
 }
 
@@ -146,12 +163,7 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
     // Return EjectError::DeviceNotFound on any failure.
 
     // Query device number
-    let device_number = query_device_number(mount_point)?;
-
-    println!(
-        "device number: {} partition: {}",
-        device_number.DeviceNumber, device_number.PartitionNumber
-    );
+    let device_number = query_device_info(mount_point).ok_or(EjectError::DeviceNotFound)?;
 
     let mut buffer_len = 0;
     let size_result = unsafe {
@@ -183,11 +195,6 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
         CONFIGRET(0) => {}
         _ => return Err(EjectError::DeviceNotFound),
     }
-
-    println!(
-        "buffer has {} entries",
-        buffer.split(|&c| c == 0).filter(|p| !p.is_empty()).count()
-    );
 
     // Check each entry and open it
     let mut matched_entry: Option<Vec<u16>> = None;
@@ -235,13 +242,11 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
 
         unsafe { _ = CloseHandle(entry_handle) };
 
-        if entry_result.is_ok() {
+        if entry_result.is_ok() && entry_device_number.DeviceNumber == device_number.DeviceNumber {
             matched_entry = Some(entry);
             break;
         }
     }
-
-    println!("matched_entry is_some: {}", matched_entry.is_some());
 
     // Find entry matching our volume GUID
     let interface_path = matched_entry.ok_or(EjectError::DeviceNotFound)?;
@@ -257,8 +262,6 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
         .unwrap_or(&interface_path)
         .replace('#', r"\");
 
-    println!("device_instid: {:?}", device_instid);
-
     // Back to intermediate representation
     let mut device_instid = str_to_utf16vec(&device_instid);
     device_instid.push(0u16);
@@ -272,8 +275,6 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
             CM_LOCATE_DEVNODE_NORMAL,
         )
     };
-
-    println!("locate_result: {:?}", locate_result);
 
     if locate_result != CONFIGRET(0) {
         return Err(EjectError::DeviceNotFound);
@@ -304,11 +305,10 @@ fn request_eject(devinst: u32) -> Result<(), EjectError> {
 }
 
 /// Queries a device number from its mount point.
-fn query_device_number(mount_point: &str) -> Result<STORAGE_DEVICE_NUMBER, EjectError> {
-    let handle = open_volume(mount_point)?;
+fn query_device_info(mount_point: &str) -> Option<STORAGE_DEVICE_NUMBER> {
+    let handle = open_volume(mount_point).ok()?;
     let mut device_number: STORAGE_DEVICE_NUMBER = unsafe { std::mem::zeroed() };
     let mut output_size: u32 = 0;
-
     let result = unsafe {
         DeviceIoControl(
             handle,
@@ -321,11 +321,9 @@ fn query_device_number(mount_point: &str) -> Result<STORAGE_DEVICE_NUMBER, Eject
             None,
         )
     };
-    unsafe { _ = CloseHandle(handle) };
-
-    if result.is_err() {
-        return Err(EjectError::DeviceNotFound);
+    unsafe {
+        _ = CloseHandle(handle);
     }
-
-    Ok(device_number)
+    result.ok()?;
+    Some(device_number)
 }
