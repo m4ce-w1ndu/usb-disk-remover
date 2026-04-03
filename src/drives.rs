@@ -48,6 +48,7 @@ pub struct RemovableDrive {
     /// Connection bus type
     pub bus_type: BusType,
     /// Whether this device is a card reader (set by user config or detection)
+    #[allow(unused, dead_code, nonstandard_style, non_upper_case_globals)]
     pub is_card_reader: bool,
 }
 
@@ -252,7 +253,9 @@ fn query_device_properties(drive_letter: &str) -> Option<DeviceProperties> {
     // Create the DeviceProperties struct
     let dev_props = DeviceProperties {
         bus_type: match device_descriptor.BusType {
+            #[allow(unused, dead_code, nonstandard_style, non_upper_case_globals)]
             BusTypeUsb => BusType::Usb,
+            #[allow(unused, dead_code, nonstandard_style, non_upper_case_globals)]
             BusType1394 => BusType::Firewire,
             _ => BusType::Unknown,
         },
