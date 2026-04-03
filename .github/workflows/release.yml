@@ -2,11 +2,14 @@ name: Release
 
 on:
   push:
+    branches:
+      - "!*"
     tags:
       - "v*"
 
 jobs:
   release:
+    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
