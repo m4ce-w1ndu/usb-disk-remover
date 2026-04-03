@@ -16,6 +16,8 @@ windows = { version = "0.61", features = [
     "Win32_System_IO",
     "Win32_System_Ioctl",
     "Win32_Security",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_Controls",
 ] }
 
 # Native Win32 GUI wrappers
