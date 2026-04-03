@@ -17,8 +17,6 @@ use windows::{
     core::{PCWSTR, PWSTR},
 };
 
-use std::ffi::c_void;
-
 use crate::utils::{is_bit_set, str_to_utf16vec};
 
 /// Maximum valid ASCII value
@@ -58,14 +56,23 @@ pub struct RemovableDrive {
     pub is_card_reader: bool,
 }
 
+/// Generic device properties
+#[derive(Debug, Clone)]
+struct DeviceProperties {
+    bus_type: BusType,
+    vendor: String,
+    product: String,
+}
+
 /// Returns all removable drives currently visible to the system.
 pub fn enumerate_drives() -> Vec<RemovableDrive> {
     let letters = logical_drive_letters();
 
     letters
         .into_iter()
-        .filter(|path| is_removable(path))
-        .filter_map(|path| drive_info(&path))
+        .filter(|p| is_removable(p))
+        .filter_map(|p| drive_info(&p))
+        .filter(|d| is_removable_bus(&d.bus_type))
         .collect()
 }
 
@@ -106,15 +113,7 @@ fn is_removable(root: &str) -> bool {
     let as_utf16vec = str_to_utf16vec(root);
     let as_pcwstr = PCWSTR(as_utf16vec.as_ptr());
 
-    let removable_flag = unsafe { GetDriveTypeW(as_pcwstr) == DRIVE_REMOVABLE };
-
-    // Get drive bus
-    let drive_bus = bus_type_from_drive(&root.to_owned());
-    let removable_bus = drive_bus.is_some() && is_removable_bus(drive_bus.unwrap());
-
-    // The drive is removable if it has the removable flag or its bus
-    // is flagged as a removable bus
-    removable_flag || removable_bus
+    unsafe { GetDriveTypeW(as_pcwstr) == DRIVE_REMOVABLE }
 }
 
 /// Queries volume label and (later) hardware strings for `root`.
@@ -122,15 +121,21 @@ fn is_removable(root: &str) -> bool {
 fn drive_info(root: &str) -> Option<RemovableDrive> {
     let label = volume_label(root)?;
 
-    // TODO: query vendor/product via DeviceIoControl (next step)
-    Some(RemovableDrive {
-        mount_point: root.to_string(),
-        label,
-        vendor: String::new(),
-        product: String::new(),
-        bus_type: BusType::Unknown,
-        is_card_reader: false,
-    })
+    // Query vendor/product via DeviceIoControl (next step)
+    let dev_props = query_device_properties(root);
+
+    if let Some(props) = dev_props {
+        Some(RemovableDrive {
+            mount_point: root.to_string(),
+            label,
+            vendor: props.vendor,
+            product: props.product,
+            bus_type: props.bus_type,
+            is_card_reader: false,
+        })
+    } else {
+        None
+    }
 }
 
 /// Returns the volume label for `root`, or None on failure.
@@ -167,12 +172,11 @@ fn volume_label(root: &str) -> Option<String> {
 }
 
 /// Returns true if the given bus is a removable bus.
-fn is_removable_bus(bus: BusType) -> bool {
-    bus == BusType::Usb || bus == BusType::Firewire
+fn is_removable_bus(bus: &BusType) -> bool {
+    bus == &BusType::Usb || bus == &BusType::Firewire
 }
 
-/// Returns the bus type of the drive related with the given letter
-fn bus_type_from_drive(drive_letter: &String) -> Option<BusType> {
+fn query_device_properties(drive_letter: &str) -> Option<DeviceProperties> {
     const OUT_BUF_LEN: usize = 1024;
 
     // TODO: open a handle to the drive using CreateFileW()
@@ -228,15 +232,38 @@ fn bus_type_from_drive(drive_letter: &String) -> Option<BusType> {
     let device_descriptor: &STORAGE_DEVICE_DESCRIPTOR =
         unsafe { &*(output_buffer.as_ptr() as *const STORAGE_DEVICE_DESCRIPTOR) };
 
-    // Match and map the device type
-    let bus_type = match device_descriptor.BusType {
-        BusTypeUsb => BusType::Usb,
-        BusType1394 => BusType::Firewire,
-        _ => BusType::Unknown,
+    // Get vendor and product ID strings
+    let mut vendor_string = "Unknown".to_string();
+    let mut product_string = "Unknown".to_string();
+
+    // Get vendor and device id by checking if properties are valid
+    if device_descriptor.VendorIdOffset != 0 {
+        let vendor_offset = device_descriptor.VendorIdOffset as usize;
+        let vendor_ptr = unsafe { output_buffer.as_ptr().add(vendor_offset) as *const i8 };
+        let vendor_cstr = unsafe { std::ffi::CStr::from_ptr(vendor_ptr) };
+        vendor_string = vendor_cstr.to_string_lossy().trim().to_string();
+    }
+
+    if device_descriptor.ProductIdOffset != 0 {
+        let product_offset = device_descriptor.ProductIdOffset as usize;
+        let product_ptr = unsafe { output_buffer.as_ptr().add(product_offset) as *const i8 };
+        let product_cstr = unsafe { std::ffi::CStr::from_ptr(product_ptr) };
+        product_string = product_cstr.to_string_lossy().trim().to_string();
+    }
+
+    // Create the DeviceProperties struct
+    let dev_props = DeviceProperties {
+        bus_type: match device_descriptor.BusType {
+            BusTypeUsb => BusType::Usb,
+            BusType1394 => BusType::Firewire,
+            _ => BusType::Unknown,
+        },
+        vendor: vendor_string,
+        product: product_string,
     };
 
     // Close file handle
     let _ = unsafe { CloseHandle(handle) };
 
-    Some(bus_type)
+    Some(dev_props)
 }
