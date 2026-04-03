@@ -113,7 +113,10 @@ fn is_removable(root: &str) -> bool {
     let as_utf16vec = str_to_utf16vec(root);
     let as_pcwstr = PCWSTR(as_utf16vec.as_ptr());
 
-    unsafe { GetDriveTypeW(as_pcwstr) == DRIVE_REMOVABLE }
+    matches!(
+        unsafe { GetDriveTypeW(as_pcwstr) },
+        DRIVE_REMOVABLE | DRIVE_FIXED
+    )
 }
 
 /// Queries volume label and (later) hardware strings for `root`.
@@ -176,6 +179,7 @@ fn is_removable_bus(bus: &BusType) -> bool {
     bus == &BusType::Usb || bus == &BusType::Firewire
 }
 
+/// Queries a device to obtain its properties
 fn query_device_properties(drive_letter: &str) -> Option<DeviceProperties> {
     const OUT_BUF_LEN: usize = 1024;
 
