@@ -61,6 +61,18 @@ fn dismount_volume(handle: HANDLE) -> Result<(), EjectError> {
 }
 
 fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
+    // 1. Call GetVolumeNameForVolumeMountPointW with mount_point ("F:\\") to get
+    //    the volume GUID path ("\\?\Volume{guid}\").
+    //
+    // 2. Call CM_Get_Device_Interface_List_Size with GUID_DEVINTERFACE_VOLUME and
+    //    the volume GUID path to get the required buffer size, then call
+    //    CM_Get_Device_Interface_List with a buffer of that size to get the
+    //    double-null-terminated list of device interface paths. Use the first entry.
+    //
+    // 3. Call CM_Locate_DevNodeW with the device interface path and
+    //    CM_LOCATE_DEVNODE_NORMAL to get the DEVINST (u32).
+    //
+    // Return EjectError::DeviceNotFound on any failure.
     todo!()
 }
 
