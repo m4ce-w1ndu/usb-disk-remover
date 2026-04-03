@@ -20,19 +20,29 @@ jobs:
       - name: Create Release Bundle
         shell: pwsh
         run: |
-          # Create a temporary folder for the ZIP contents
+          # 1. Get the tag name (e.g., v1.0.0)
+          $VERSION = "${{ github.ref_name }}"
+          $PROJECT_NAME = "your-project-name"
+          $ZIP_NAME = "$PROJECT_NAME-$VERSION.zip"
+
+          # 2. Create bundle folder
           mkdir bundle
-          # Copy the binary and the readme
-          cp target/release/usb-disk-remover.exe bundle/
-          cp README.md bundle/
-          # Compress the folder into a ZIP file
-          7z a usb-disk-remover.zip ./bundle/*
+
+          # 3. Copy files (Assumes binary name matches project name)
+          cp "target/release/$PROJECT_NAME.exe" bundle/
+          cp "README.md" bundle/
+
+          # 4. Zip it up
+          7z a $ZIP_NAME ./bundle/*
+
+          # 5. Store the filename for the next step
+          echo "ZIP_PATH=$ZIP_NAME" >> $env:GITHUB_ENV
 
       - name: Upload Release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: usb-disk-remover.zip
-          asset_name: usb-disk-remover.zip
+          file: ${{ env:ZIP_PATH }}
+          asset_name: ${{ env:ZIP_PATH }}
           tag: ${{ github.ref }}
           overwrite: true
