@@ -17,11 +17,22 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      - name: Create Release Bundle
+        shell: pwsh
+        run: |
+          # Create a temporary folder for the ZIP contents
+          mkdir bundle
+          # Copy the binary and the readme
+          cp target/release/usb-disk-remover.exe bundle/
+          cp README.md bundle/
+          # Compress the folder into a ZIP file
+          7z a usb-disk-remover.zip ./bundle/*
+
       - name: Upload Release
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/release/your-project-name.exe
-          asset_name: your-project-name.exe
+          file: usb-disk-remover.zip
+          asset_name: usb-disk-remover.zip
           tag: ${{ github.ref }}
           overwrite: true
