@@ -1,7 +1,7 @@
 // USB Disk Remover
 // A portable Windows utility to safely eject removable drives.
 
-// #![windows_subsystem = "windows"]  // commented out during development so stdout is visible
+#![windows_subsystem = "windows"]
 
 use crate::ui::App;
 use native_windows_gui as nwg;
