@@ -4,6 +4,7 @@
 // #![windows_subsystem = "windows"]  // commented out during development so stdout is visible
 
 mod drives;
+mod eject;
 mod utils;
 
 fn main() {
