@@ -3,7 +3,7 @@ use windows::{
         Foundation::{CloseHandle, MAX_PATH},
         Storage::FileSystem::{
             BusType1394, BusTypeUsb, CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ,
-            FILE_SHARE_WRITE, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, OPEN_ALWAYS,
+            FILE_SHARE_WRITE, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
             OPEN_EXISTING,
         },
         System::{
@@ -14,7 +14,7 @@ use windows::{
             },
         },
     },
-    core::{PCWSTR, PWSTR},
+    core::PCWSTR,
 };
 
 use crate::utils::{is_bit_set, str_to_utf16vec};
@@ -23,13 +23,8 @@ use crate::utils::{is_bit_set, str_to_utf16vec};
 const ASCII_MAX: u8 = 127;
 
 /// Drive type constants from Windows API
-const DRIVE_UNKNOWN: u32 = 0;
-const DRIVE_NO_ROOT_DIR: u32 = 1;
 const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
-const DRIVE_REMOTE: u32 = 4;
-const DRIVE_CDROM: u32 = 5;
-const DRIVE_RAMDISK: u32 = 6;
 
 /// The type of bus a removable device is connected through.
 #[derive(Debug, Clone, PartialEq, Eq)]
