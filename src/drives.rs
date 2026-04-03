@@ -135,7 +135,7 @@ fn drive_info(root: &str) -> Option<RemovableDrive> {
 
 /// Returns the volume label for `root`, or None on failure.
 fn volume_label(root: &str) -> Option<String> {
-    // TODO: encode `root` as PCWSTR, allocate a [u16; MAX_PATH] buffer,
+    // Encode `root` as PCWSTR, allocate a [u16; MAX_PATH] buffer,
     // call GetVolumeInformationW(), then convert the buffer to a String
     // with String::from_utf16_lossy().
 
