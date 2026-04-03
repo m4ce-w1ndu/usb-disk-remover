@@ -3,19 +3,18 @@
 
 // #![windows_subsystem = "windows"]  // commented out during development so stdout is visible
 
+use crate::ui::App;
+use native_windows_gui as nwg;
+use nwg::NativeUi;
+
 mod drives;
 mod eject;
+mod ui;
 mod utils;
 
 fn main() {
-    let drives = drives::enumerate_drives();
-    println!("{:#?}", drives);
-
-    if let Some(drive) = drives.first() {
-        println!("Attempting to eject {}...", drive.mount_point);
-        match eject::eject_drive(drive) {
-            Ok(()) => println!("Ejected successfully"),
-            Err(e) => println!("Eject failed: {:?}", e),
-        }
-    }
+    nwg::init().expect("Failed to init ngw");
+    nwg::Font::set_global_family("Segoe UI").ok();
+    let _app = App::build_ui(Default::default()).expect("Failed to build UI.");
+    nwg::dispatch_thread_events();
 }
