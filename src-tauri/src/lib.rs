@@ -179,6 +179,7 @@ fn show_about(app: &AppHandle) {
     .inner_size(360.0, 240.0)
     .resizable(false)
     .center()
+    .transparent(true)
     .build() else { return };
 
     apply_mica(&window);
