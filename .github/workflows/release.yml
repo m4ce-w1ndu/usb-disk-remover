@@ -26,7 +26,7 @@ jobs:
         run: |
           # 1. Get the tag name (e.g., v1.0.0)
           $VERSION = "${{ github.ref_name }}"
-          $PROJECT_NAME = "your-project-name"
+          $PROJECT_NAME = "usb-disk-remover"
           $ZIP_NAME = "$PROJECT_NAME-$VERSION.zip"
 
           # 2. Create bundle folder
