@@ -183,12 +183,11 @@ fn is_removable_bus(bus: &BusType) -> bool {
 fn query_device_properties(drive_letter: &str) -> Option<DeviceProperties> {
     const OUT_BUF_LEN: usize = 1024;
 
-    // TODO: open a handle to the drive using CreateFileW()
+    // Open a handle to the drive using CreateFileW()
     // using DOS logical path (\\.\X:)
     // Then call DeviceIoControl with IOCTL_STORAGE_QUERY_PROPERTY
     // with a STORAGE_PROPERTY_QUERY struct with PropertyId = StorageDeviceProperty
     // and QueryType = PropertyStandardQuery
-
     let device_format = format!("\\\\.\\{}:", drive_letter.chars().next().unwrap());
     let device_utf16vec = str_to_utf16vec(&device_format);
     let device_pcwstr = PCWSTR(device_utf16vec.as_ptr());
