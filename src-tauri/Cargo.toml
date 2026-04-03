@@ -1,0 +1,40 @@
+[package]
+name = "usb-disk-remover"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "usb_disk_remover_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "usb-disk-remover"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_System_LibraryLoader",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_Security",
+    "Win32_Graphics_Dwm",
+] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1

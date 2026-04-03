@@ -1,3 +1,0 @@
-// Embeds the application manifest into the binary.
-// Resource type 24 = RT_MANIFEST, resource ID 1 = application manifest.
-1 24 "app.manifest"

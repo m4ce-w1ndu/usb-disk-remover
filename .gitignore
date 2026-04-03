@@ -1,1 +1,13 @@
+# Rust
 /target
+/src-tauri/target
+
+# Node
+node_modules
+dist
+
+# Tauri generated
+src-tauri/gen
+
+# Dev artifacts
+*.log

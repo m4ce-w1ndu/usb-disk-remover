@@ -27,7 +27,7 @@ const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
 
 /// The type of bus a removable device is connected through.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum BusType {
     Usb,
     Firewire,
@@ -35,7 +35,7 @@ pub enum BusType {
 }
 
 /// A single removable drive visible to the system.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RemovableDrive {
     /// Drive letter + backslash, e.g. "E:\"
     pub mount_point: String,
@@ -72,15 +72,11 @@ pub fn enumerate_drives() -> Vec<RemovableDrive> {
 }
 
 /// Returns drive root paths for every letter present in the system bitmask.
-/// e.g. ["C:\\", "E:\\", "F:\\"]
 fn logical_drive_letters() -> Vec<String> {
     const START_LETTER: char = 'A';
 
     let mut drives = Vec::new();
 
-    // Call GetLogicalDrives() and iterate the 26-bit bitmask.
-    // Bit 0 = A, bit 1 = B, ..., bit 25 = Z.
-    // Push "X:\\" for each set bit.
     let logical_drives = unsafe { GetLogicalDrives() };
 
     for i in 0..27 {
@@ -90,7 +86,6 @@ fn logical_drive_letters() -> Vec<String> {
             0
         };
 
-        // If the code is a valid letter
         if ascii_code != 0 && ascii_code <= ASCII_MAX as u32 {
             let letter = (ascii_code as u8) as char;
             let drive_letter = format!("{}:\\", letter);
@@ -101,10 +96,8 @@ fn logical_drive_letters() -> Vec<String> {
     drives
 }
 
-/// Returns true if the drive at `root` is removable.
+/// Returns true if the drive at `root` is removable or fixed (for external HDDs).
 fn is_removable(root: &str) -> bool {
-    // Encode `root` as a null-terminated wide string (PCWSTR),
-    // call GetDriveTypeW(), and return true when the result == DRIVE_REMOVABLE.
     let as_utf16vec = str_to_utf16vec(root);
     let as_pcwstr = PCWSTR(as_utf16vec.as_ptr());
 
@@ -114,40 +107,26 @@ fn is_removable(root: &str) -> bool {
     )
 }
 
-/// Queries volume label and (later) hardware strings for `root`.
-/// Returns None if the drive disappeared between enumeration and query.
+/// Queries volume label and hardware strings for `root`.
 fn drive_info(root: &str) -> Option<RemovableDrive> {
     let label = volume_label(root)?;
+    let props = query_device_properties(root)?;
 
-    // Query vendor/product via DeviceIoControl (next step)
-    let dev_props = query_device_properties(root);
-
-    if let Some(props) = dev_props {
-        Some(RemovableDrive {
-            mount_point: root.to_string(),
-            label,
-            vendor: props.vendor,
-            product: props.product,
-            bus_type: props.bus_type,
-            is_card_reader: false,
-        })
-    } else {
-        None
-    }
+    Some(RemovableDrive {
+        mount_point: root.to_string(),
+        label,
+        vendor: props.vendor,
+        product: props.product,
+        bus_type: props.bus_type,
+        is_card_reader: false,
+    })
 }
 
 /// Returns the volume label for `root`, or None on failure.
 fn volume_label(root: &str) -> Option<String> {
-    // Encode `root` as PCWSTR, allocate a [u16; MAX_PATH] buffer,
-    // call GetVolumeInformationW(), then convert the buffer to a String
-    // with String::from_utf16_lossy().
-
     let root_utf16vec = str_to_utf16vec(root);
-
-    // Output buffer
     let mut output_buffer = [0u16; MAX_PATH as usize];
 
-    // Call the API
     let volume_info = unsafe {
         GetVolumeInformationW(
             PCWSTR(root_utf16vec.as_ptr()),
@@ -162,11 +141,7 @@ fn volume_label(root: &str) -> Option<String> {
     let null_pos = output_buffer.iter().position(|&c| c == 0).unwrap_or(0);
     let label = String::from_utf16_lossy(&output_buffer[..null_pos]).to_string();
 
-    if let Ok(_) = volume_info {
-        Some(label)
-    } else {
-        None
-    }
+    volume_info.ok().map(|_| label)
 }
 
 /// Returns true if the given bus is a removable bus.
@@ -174,20 +149,14 @@ fn is_removable_bus(bus: &BusType) -> bool {
     bus == &BusType::Usb || bus == &BusType::Firewire
 }
 
-/// Queries a device to obtain its properties
+/// Queries a device to obtain its properties.
 fn query_device_properties(drive_letter: &str) -> Option<DeviceProperties> {
     const OUT_BUF_LEN: usize = 1024;
 
-    // Open a handle to the drive using CreateFileW()
-    // using DOS logical path (\\.\X:)
-    // Then call DeviceIoControl with IOCTL_STORAGE_QUERY_PROPERTY
-    // with a STORAGE_PROPERTY_QUERY struct with PropertyId = StorageDeviceProperty
-    // and QueryType = PropertyStandardQuery
     let device_format = format!("\\\\.\\{}:", drive_letter.chars().next().unwrap());
     let device_utf16vec = str_to_utf16vec(&device_format);
     let device_pcwstr = PCWSTR(device_utf16vec.as_ptr());
 
-    // Get the device handle
     let handle = unsafe {
         CreateFileW(
             device_pcwstr,
@@ -201,7 +170,6 @@ fn query_device_properties(drive_letter: &str) -> Option<DeviceProperties> {
         .ok()?
     };
 
-    // Query properties
     let query = STORAGE_PROPERTY_QUERY {
         PropertyId: StorageDeviceProperty,
         QueryType: PropertyStandardQuery,
@@ -211,7 +179,6 @@ fn query_device_properties(drive_letter: &str) -> Option<DeviceProperties> {
     let mut output_buffer = [0u8; OUT_BUF_LEN];
     let mut bytes_returned = 0u32;
 
-    // Perform device query
     let _ = unsafe {
         DeviceIoControl(
             handle,
@@ -226,30 +193,22 @@ fn query_device_properties(drive_letter: &str) -> Option<DeviceProperties> {
         .ok()?
     };
 
-    // Convert output buffer to storage descriptor
     let device_descriptor: &STORAGE_DEVICE_DESCRIPTOR =
         unsafe { &*(output_buffer.as_ptr() as *const STORAGE_DEVICE_DESCRIPTOR) };
 
-    // Get vendor and product ID strings
-    let mut vendor_string = "Unknown".to_string();
-    let mut product_string = "Unknown".to_string();
+    let mut vendor_string = String::new();
+    let mut product_string = String::new();
 
-    // Get vendor and device id by checking if properties are valid
     if device_descriptor.VendorIdOffset != 0 {
-        let vendor_offset = device_descriptor.VendorIdOffset as usize;
-        let vendor_ptr = unsafe { output_buffer.as_ptr().add(vendor_offset) as *const i8 };
-        let vendor_cstr = unsafe { std::ffi::CStr::from_ptr(vendor_ptr) };
-        vendor_string = vendor_cstr.to_string_lossy().trim().to_string();
+        let ptr = unsafe { output_buffer.as_ptr().add(device_descriptor.VendorIdOffset as usize) as *const i8 };
+        vendor_string = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().trim().to_string();
     }
 
     if device_descriptor.ProductIdOffset != 0 {
-        let product_offset = device_descriptor.ProductIdOffset as usize;
-        let product_ptr = unsafe { output_buffer.as_ptr().add(product_offset) as *const i8 };
-        let product_cstr = unsafe { std::ffi::CStr::from_ptr(product_ptr) };
-        product_string = product_cstr.to_string_lossy().trim().to_string();
+        let ptr = unsafe { output_buffer.as_ptr().add(device_descriptor.ProductIdOffset as usize) as *const i8 };
+        product_string = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().trim().to_string();
     }
 
-    // Create the DeviceProperties struct
     let dev_props = DeviceProperties {
         bus_type: match device_descriptor.BusType {
             BusTypeUsb => BusType::Usb,
@@ -260,8 +219,7 @@ fn query_device_properties(drive_letter: &str) -> Option<DeviceProperties> {
         product: product_string,
     };
 
-    // Close file handle
-    let _ = unsafe { CloseHandle(handle) };
+    unsafe { let _ = CloseHandle(handle); }
 
     Some(dev_props)
 }
