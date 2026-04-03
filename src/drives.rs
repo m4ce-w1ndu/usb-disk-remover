@@ -106,11 +106,15 @@ fn is_removable(root: &str) -> bool {
     let as_utf16vec = str_to_utf16vec(root);
     let as_pcwstr = PCWSTR(as_utf16vec.as_ptr());
 
-    if unsafe { GetDriveTypeW(as_pcwstr) == DRIVE_REMOVABLE } {
-        return true;
-    }
+    let removable_flag = unsafe { GetDriveTypeW(as_pcwstr) == DRIVE_REMOVABLE };
 
-    false
+    // Get drive bus
+    let drive_bus = bus_type_from_drive(&root.to_owned());
+    let removable_bus = drive_bus.is_some() && is_removable_bus(drive_bus.unwrap());
+
+    // The drive is removable if it has the removable flag or its bus
+    // is flagged as a removable bus
+    removable_flag || removable_bus
 }
 
 /// Queries volume label and (later) hardware strings for `root`.
@@ -135,6 +139,11 @@ fn volume_label(root: &str) -> Option<String> {
     // call GetVolumeInformationW(), then convert the buffer to a String
     // with String::from_utf16_lossy().
     None
+}
+
+/// Returns true if the given bus is a removable bus.
+fn is_removable_bus(bus: BusType) -> bool {
+    bus == BusType::Usb || bus == BusType::Firewire
 }
 
 /// Returns the bus type of the drive related with the given letter
