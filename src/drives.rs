@@ -1,6 +1,6 @@
 use windows::{
     Win32::{
-        Foundation::CloseHandle,
+        Foundation::{CloseHandle, MAX_PATH},
         Storage::FileSystem::{
             BusType1394, BusTypeUsb, CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ,
             FILE_SHARE_WRITE, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, OPEN_ALWAYS,
@@ -14,7 +14,7 @@ use windows::{
             },
         },
     },
-    core::PCWSTR,
+    core::{PCWSTR, PWSTR},
 };
 
 use std::ffi::c_void;
@@ -138,7 +138,32 @@ fn volume_label(root: &str) -> Option<String> {
     // TODO: encode `root` as PCWSTR, allocate a [u16; MAX_PATH] buffer,
     // call GetVolumeInformationW(), then convert the buffer to a String
     // with String::from_utf16_lossy().
-    None
+
+    let root_utf16vec = str_to_utf16vec(root);
+
+    // Output buffer
+    let mut output_buffer = [0u16; MAX_PATH as usize];
+
+    // Call the API
+    let volume_info = unsafe {
+        GetVolumeInformationW(
+            PCWSTR(root_utf16vec.as_ptr()),
+            Some(&mut output_buffer),
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+
+    let null_pos = output_buffer.iter().position(|&c| c == 0).unwrap_or(0);
+    let label = String::from_utf16_lossy(&output_buffer[..null_pos]).to_string();
+
+    if let Ok(_) = volume_info {
+        Some(label)
+    } else {
+        None
+    }
 }
 
 /// Returns true if the given bus is a removable bus.
