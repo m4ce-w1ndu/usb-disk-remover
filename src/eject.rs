@@ -4,6 +4,11 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_Device_Interface_ListW, CM_Get_Parent, CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW,
     CM_Request_Device_EjectW, CONFIGRET,
 };
+use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_ACCESS_RIGHTS, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    OPEN_EXISTING,
+};
 use windows::core::PCWSTR;
 use windows::{
     Win32::{
@@ -37,6 +42,35 @@ pub enum EjectError {
 /// Ejects the device leveraging Windows' PnP manager.
 pub fn eject_drive(drive: &RemovableDrive) -> Result<(), EjectError> {
     todo!()
+}
+
+/// Opens the volume and returns its device HANDLE
+fn open_volume(mount_point: &String) -> Result<HANDLE, EjectError> {
+    // Get drive letter as single char
+    let drive_letter = mount_point.chars().next().unwrap();
+
+    // Create device node path
+    let dev_path = format!("\\\\.\\{}:", drive_letter);
+    let dev_path = str_to_utf16vec(&dev_path);
+
+    // Open file and get handle
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(dev_path.as_ptr()),
+            (GENERIC_READ | GENERIC_WRITE).0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+    };
+
+    if let Ok(hnd) = handle {
+        Ok(hnd)
+    } else {
+        Err(EjectError::DeviceNotFound)
+    }
 }
 
 /// Locks the volume using DeviceIoControl.
