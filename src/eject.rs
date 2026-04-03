@@ -1,7 +1,8 @@
 use crate::{drives::RemovableDrive, utils::str_to_utf16vec};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_Get_Device_Interface_List_SizeW,
-    CM_Get_Device_Interface_ListW, CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW, CONFIGRET,
+    CM_Get_Device_Interface_ListW, CM_Get_Parent, CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW,
+    CONFIGRET,
 };
 use windows::core::PCWSTR;
 use windows::{
@@ -171,8 +172,16 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
     Ok(dev_inst)
 }
 
+/// Returns the parent node of the current device instance.
 fn get_parent_node(devinst: u32) -> Result<u32, EjectError> {
-    todo!()
+    // Parent device instance
+    let mut parent_devinst: u32 = 0;
+    let result = unsafe { CM_Get_Parent(&mut parent_devinst, devinst, 0) };
+
+    match result {
+        r if r != CONFIGRET(0) => Err(EjectError::DeviceNotFound),
+        _ => Ok(parent_devinst),
+    }
 }
 
 fn request_eject(devinst: u32) -> Result<(), EjectError> {
