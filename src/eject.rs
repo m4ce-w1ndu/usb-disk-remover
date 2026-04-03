@@ -2,7 +2,7 @@ use crate::{drives::RemovableDrive, utils::str_to_utf16vec};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_Get_Device_Interface_List_SizeW,
     CM_Get_Device_Interface_ListW, CM_Get_Parent, CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW,
-    CONFIGRET,
+    CM_Request_Device_EjectW, CONFIGRET,
 };
 use windows::core::PCWSTR;
 use windows::{
@@ -126,8 +126,9 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
         )
     };
 
-    if size_result != CONFIGRET(0) || buffer_len <= 1 {
-        return Err(EjectError::DeviceNotFound);
+    match size_result {
+        CONFIGRET(0) if buffer_len > 1 => {}
+        _ => return Err(EjectError::DeviceNotFound),
     }
 
     // Allocate a buffer to retrieve the list
@@ -141,8 +142,9 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
         )
     };
 
-    if list_result != CONFIGRET(0) {
-        return Err(EjectError::DeviceNotFound);
+    match list_result {
+        CONFIGRET(0) => {}
+        _ => return Err(EjectError::DeviceNotFound),
     }
 
     // Find entry matching our volume GUID
@@ -184,6 +186,11 @@ fn get_parent_node(devinst: u32) -> Result<u32, EjectError> {
     }
 }
 
+/// Requests a device ejection operation to Windows' PnP manager.
 fn request_eject(devinst: u32) -> Result<(), EjectError> {
-    todo!()
+    let result = unsafe { CM_Request_Device_EjectW(devinst, None, None, 0) };
+    match result {
+        CONFIGRET(0) => Ok(()),
+        _ => Err(EjectError::EjectFailed),
+    }
 }
