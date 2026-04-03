@@ -92,16 +92,31 @@ fn create_main_window(app: &AppHandle) {
         return;
     };
 
+    // Hide to tray when the X button is clicked — don't destroy the WebView2 process
+    let win = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = win.hide();
+        }
+    });
+
     apply_mica(&window);
 }
 
 fn toggle_window(app: &AppHandle) {
     match app.get_webview_window(MAIN_LABEL) {
         Some(window) => {
-            // Destroy entirely so WebView2 is unloaded from memory
-            let _ = window.destroy();
+            // Hide/show after first creation — instant response, one cold-start only
+            if window.is_visible().unwrap_or(false) {
+                let _ = window.hide();
+            } else {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
         }
         None => {
+            // First click: cold-start WebView2 once, stays resident after this
             create_main_window(app);
         }
     }
@@ -121,6 +136,7 @@ pub fn run() {
             let mut builder = TrayIconBuilder::new()
                 .tooltip("USB Disk Remover — click to open")
                 .menu(&menu)
+                .menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
