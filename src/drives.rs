@@ -156,7 +156,8 @@ fn bus_type_from_drive(drive_letter: &String) -> Option<BusType> {
     // with a STORAGE_PROPERTY_QUERY struct with PropertyId = StorageDeviceProperty
     // and QueryType = PropertyStandardQuery
 
-    let device_utf16vec = str_to_utf16vec(&drive_letter);
+    let device_format = format!("\\\\.\\{}:", drive_letter.chars().next().unwrap());
+    let device_utf16vec = str_to_utf16vec(&device_format);
     let device_pcwstr = PCWSTR(device_utf16vec.as_ptr());
 
     // Get the device handle
@@ -210,7 +211,7 @@ fn bus_type_from_drive(drive_letter: &String) -> Option<BusType> {
     };
 
     // Close file handle
-    let _ = unsafe { CloseHandle(handle).ok()? };
+    let _ = unsafe { CloseHandle(handle) };
 
     Some(bus_type)
 }
