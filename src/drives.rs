@@ -1,7 +1,25 @@
 use windows::{
-    Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW},
+    Win32::{
+        Foundation::CloseHandle,
+        Storage::FileSystem::{
+            BusType1394, BusTypeUsb, CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW, OPEN_ALWAYS,
+            OPEN_EXISTING,
+        },
+        System::{
+            IO::DeviceIoControl,
+            Ioctl::{
+                IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery, STORAGE_DEVICE_DESCRIPTOR,
+                STORAGE_PROPERTY_QUERY, StorageDeviceProperty,
+            },
+        },
+    },
     core::PCWSTR,
 };
+
+use std::ffi::c_void;
+
+use crate::utils::{is_bit_set, str_to_utf16vec};
 
 /// Maximum valid ASCII value
 const ASCII_MAX: u8 = 127;
@@ -85,8 +103,8 @@ fn logical_drive_letters() -> Vec<String> {
 fn is_removable(root: &str) -> bool {
     // Encode `root` as a null-terminated wide string (PCWSTR),
     // call GetDriveTypeW(), and return true when the result == DRIVE_REMOVABLE.
-    let as_words = root.encode_utf16().chain([0u16]).collect::<Vec<u16>>();
-    let as_pcwstr = PCWSTR(as_words.as_ptr());
+    let as_utf16vec = str_to_utf16vec(root);
+    let as_pcwstr = PCWSTR(as_utf16vec.as_ptr());
 
     if unsafe { GetDriveTypeW(as_pcwstr) == DRIVE_REMOVABLE } {
         return true;
@@ -119,7 +137,71 @@ fn volume_label(root: &str) -> Option<String> {
     None
 }
 
-/// Returns true if the bit in position `bit` for `value` is set.
-fn is_bit_set(value: u32, bit: u8) -> bool {
-    (value & (1 << bit)) != 0
+/// Returns the bus type of the drive related with the given letter
+fn bus_type_from_drive(drive_letter: &String) -> Option<BusType> {
+    const OUT_BUF_LEN: usize = 1024;
+
+    // TODO: open a handle to the drive using CreateFileW()
+    // using DOS logical path (\\.\X:)
+    // Then call DeviceIoControl with IOCTL_STORAGE_QUERY_PROPERTY
+    // with a STORAGE_PROPERTY_QUERY struct with PropertyId = StorageDeviceProperty
+    // and QueryType = PropertyStandardQuery
+
+    let device_utf16vec = str_to_utf16vec(&drive_letter);
+    let device_pcwstr = PCWSTR(device_utf16vec.as_ptr());
+
+    // Get the device handle
+    let handle = unsafe {
+        CreateFileW(
+            device_pcwstr,
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+        .ok()?
+    };
+
+    // Query properties
+    let query = STORAGE_PROPERTY_QUERY {
+        PropertyId: StorageDeviceProperty,
+        QueryType: PropertyStandardQuery,
+        AdditionalParameters: [0; 1],
+    };
+
+    let mut output_buffer = [0u8; OUT_BUF_LEN];
+    let mut bytes_returned = 0u32;
+
+    // Perform device query
+    let _ = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            Some(&query as *const _ as *const _),
+            std::mem::size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+            Some(output_buffer.as_mut_ptr() as *mut _),
+            output_buffer.len() as u32,
+            Some(&mut bytes_returned),
+            None,
+        )
+        .ok()?
+    };
+
+    // Convert output buffer to storage descriptor
+    let device_descriptor: &STORAGE_DEVICE_DESCRIPTOR =
+        unsafe { &*(output_buffer.as_ptr() as *const STORAGE_DEVICE_DESCRIPTOR) };
+
+    // Match and map the device type
+    let bus_type = match device_descriptor.BusType {
+        BusTypeUsb => BusType::Usb,
+        BusType1394 => BusType::Firewire,
+        _ => BusType::Unknown,
+    };
+
+    // Close file handle
+    let _ = unsafe { CloseHandle(handle).ok()? };
+
+    Some(bus_type)
 }
