@@ -91,7 +91,7 @@ fn logical_drive_letters() -> Vec<String> {
         // If the code is a valid letter
         if ascii_code != 0 && ascii_code <= ASCII_MAX as u32 {
             let letter = (ascii_code as u8) as char;
-            let drive_letter = format!("{0}:\\", letter);
+            let drive_letter = format!("{}:\\", letter);
             drives.push(drive_letter);
         }
     }
