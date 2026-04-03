@@ -4,10 +4,9 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_Device_Interface_ListW, CM_Get_Parent, CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW,
     CM_Request_Device_EjectW, CONFIGRET,
 };
-use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ACCESS_RIGHTS, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    OPEN_EXISTING,
+    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows::core::PCWSTR;
 use windows::{
@@ -41,11 +40,20 @@ pub enum EjectError {
 
 /// Ejects the device leveraging Windows' PnP manager.
 pub fn eject_drive(drive: &RemovableDrive) -> Result<(), EjectError> {
-    todo!()
+    let handle = open_volume(&drive.mount_point)?;
+    let result = lock_volume(handle).and_then(|_| dismount_volume(handle));
+    unsafe {
+        _ = CloseHandle(handle);
+    };
+    result?;
+
+    let devinst = get_device_node(&drive.mount_point)?;
+    let parent = get_parent_node(devinst)?;
+    request_eject(parent)
 }
 
 /// Opens the volume and returns its device HANDLE
-fn open_volume(mount_point: &String) -> Result<HANDLE, EjectError> {
+fn open_volume(mount_point: &str) -> Result<HANDLE, EjectError> {
     // Get drive letter as single char
     let drive_letter = mount_point.chars().next().unwrap();
 
