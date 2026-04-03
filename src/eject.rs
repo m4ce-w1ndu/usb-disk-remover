@@ -150,12 +150,8 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
         .find(|path| !path.is_empty())
         .ok_or(EjectError::DeviceNotFound);
 
-    if interface_path.is_err() {
-        return Err(EjectError::DeviceNotFound);
-    }
-
     // Convert to proper intermediate format
-    let mut interface_path = interface_path.unwrap().to_vec();
+    let mut interface_path = interface_path?.to_vec();
     interface_path.push(0u16);
 
     // Locate device node
