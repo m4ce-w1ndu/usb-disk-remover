@@ -8,11 +8,11 @@ use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
+use windows::Win32::System::Ioctl::{IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER};
 use windows::core::PCWSTR;
 use windows::{
     Win32::{
         Foundation::HANDLE,
-        Storage::FileSystem::GetVolumeNameForVolumeMountPointW,
         System::{
             IO::DeviceIoControl,
             Ioctl::{FSCTL_DISMOUNT_VOLUME, FSCTL_LOCK_VOLUME},
@@ -21,9 +21,9 @@ use windows::{
     core::GUID,
 };
 
-/// GUID_DEVINTERFACE_VOLUME value
-const GUID_DEVINTERFACE_VOLUME: GUID = GUID {
-    data1: 0x53f5630d,
+/// GUID_DEVINTERFACE_DISK value
+const GUID_DEVINTERFACE_DISK: GUID = GUID {
+    data1: 0x53f56307,
     data2: 0xb6bf,
     data3: 0x11d0,
     data4: [0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b],
@@ -41,14 +41,18 @@ pub enum EjectError {
 /// Ejects the device leveraging Windows' PnP manager.
 pub fn eject_drive(drive: &RemovableDrive) -> Result<(), EjectError> {
     let handle = open_volume(&drive.mount_point)?;
+    println!("handle ok");
     let result = lock_volume(handle).and_then(|_| dismount_volume(handle));
     unsafe {
         _ = CloseHandle(handle);
     };
     result?;
+    println!("lock/dismount ok");
 
     let devinst = get_device_node(&drive.mount_point)?;
+    println!("device node: {}", devinst);
     let parent = get_parent_node(devinst)?;
+    println!("parent node: {}", parent);
     request_eject(parent)
 }
 
@@ -121,49 +125,40 @@ fn dismount_volume(handle: HANDLE) -> Result<(), EjectError> {
 
 /// Returns the device identifier node for the given mount point.
 fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
-    // 1. Call GetVolumeNameForVolumeMountPointW with mount_point ("F:\\") to get
-    //    the volume GUID path ("\\?\Volume{guid}\").
+    // 1. Open "\\.\X:" with CreateFileW (read-only, no write access needed here).
+    //    Call DeviceIoControl with IOCTL_STORAGE_GET_DEVICE_NUMBER to get a
+    //    STORAGE_DEVICE_NUMBER containing DeviceNumber and PartitionNumber.
+    //    Close the handle immediately after.
     //
-    // 2. Call CM_Get_Device_Interface_List_Size with GUID_DEVINTERFACE_VOLUME and
-    //    the volume GUID path to get the required buffer size, then call
-    //    CM_Get_Device_Interface_List with a buffer of that size to get the
-    //    double-null-terminated list of device interface paths. Use the first entry.
+    // 2. Call CM_Get_Device_Interface_List_SizeW with GUID_DEVINTERFACE_VOLUME
+    //    and None as the filter to get the required buffer size, then call
+    //    CM_Get_Device_Interface_ListW to fill a buffer with all volume interface
+    //    paths (double-null-terminated list).
     //
-    // 3. Call CM_Locate_DevNodeW with the device interface path and
+    // 3. For each non-empty entry in the buffer, open it with CreateFileW and
+    //    call IOCTL_STORAGE_GET_DEVICE_NUMBER. If DeviceNumber AND PartitionNumber
+    //    both match the values from step 1, this is the correct interface path.
+    //    Close each handle after querying.
+    //
+    // 4. Call CM_Locate_DevNodeW with the matching interface path and
     //    CM_LOCATE_DEVNODE_NORMAL to get the DEVINST (u32).
     //
     // Return EjectError::DeviceNotFound on any failure.
 
-    // Canonical path max length of buffer
-    const CANONICAL_PATH_LEN: usize = 1024;
+    // Query device number
+    let device_number = query_device_number(mount_point)?;
 
-    // Volume name buffer
-    let mut volume_name = [0u16; CANONICAL_PATH_LEN];
-    let mp_utf16vec = str_to_utf16vec(mount_point);
-
-    // Get volume canonical path
-    let volume_name_result = unsafe {
-        GetVolumeNameForVolumeMountPointW(PCWSTR(mp_utf16vec.as_ptr()), &mut volume_name)
-    };
-
-    // Convert to string on success
-    if volume_name_result.is_err() {
-        return Err(EjectError::DeviceNotFound);
-    }
-
-    let null_pos = volume_name.iter().position(|&c| c == 0).unwrap_or(0);
-    let volume_name = String::from_utf16_lossy(&volume_name[..null_pos]).to_string();
-
-    // Get volume name as PCWSTR intermediate representation
-    let volume_name_ir = str_to_utf16vec(&volume_name);
+    println!(
+        "device number: {} partition: {}",
+        device_number.DeviceNumber, device_number.PartitionNumber
+    );
 
     let mut buffer_len = 0;
-
     let size_result = unsafe {
         CM_Get_Device_Interface_List_SizeW(
             &mut buffer_len,
-            &GUID_DEVINTERFACE_VOLUME,
-            PCWSTR(volume_name_ir.as_ptr()),
+            &GUID_DEVINTERFACE_DISK,
+            None,
             CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
         )
     };
@@ -177,8 +172,8 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
     let mut buffer = vec![0u16; buffer_len as usize];
     let list_result = unsafe {
         CM_Get_Device_Interface_ListW(
-            &GUID_DEVINTERFACE_VOLUME,
-            PCWSTR(volume_name_ir.as_ptr()),
+            &GUID_DEVINTERFACE_DISK,
+            None,
             &mut buffer,
             CM_GET_DEVICE_INTERFACE_LIST_PRESENT,
         )
@@ -189,25 +184,96 @@ fn get_device_node(mount_point: &str) -> Result<u32, EjectError> {
         _ => return Err(EjectError::DeviceNotFound),
     }
 
-    // Find entry matching our volume GUID
-    let interface_path = buffer
-        .split(|&c| c == 0)
-        .find(|path| !path.is_empty())
-        .ok_or(EjectError::DeviceNotFound);
+    println!(
+        "buffer has {} entries",
+        buffer.split(|&c| c == 0).filter(|p| !p.is_empty()).count()
+    );
 
-    // Convert to proper intermediate format
-    let mut interface_path = interface_path?.to_vec();
-    interface_path.push(0u16);
+    // Check each entry and open it
+    let mut matched_entry: Option<Vec<u16>> = None;
+    for entry in buffer.split(|&c| c == 0).filter(|p| !p.is_empty()) {
+        // NULL-terminate the entry
+        let mut entry = entry.to_vec();
+        entry.push(0u16);
+
+        // Get entry handle
+        let entry_handle = unsafe {
+            CreateFileW(
+                PCWSTR(entry.as_ptr()),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                None,
+            )
+        };
+
+        if entry_handle.is_err() {
+            continue;
+        }
+
+        // Unwrap the handle
+        let entry_handle = entry_handle.unwrap();
+
+        // Get device number
+        let mut entry_device_number: STORAGE_DEVICE_NUMBER = unsafe { std::mem::zeroed() };
+        let mut entry_output_size: u32 = 0;
+
+        let entry_result = unsafe {
+            DeviceIoControl(
+                entry_handle,
+                IOCTL_STORAGE_GET_DEVICE_NUMBER,
+                None,
+                0,
+                Some(&mut entry_device_number as *mut _ as *mut _),
+                std::mem::size_of::<STORAGE_DEVICE_NUMBER>() as u32,
+                Some(&mut entry_output_size as *mut u32),
+                None,
+            )
+        };
+
+        unsafe { _ = CloseHandle(entry_handle) };
+
+        if entry_result.is_ok() {
+            matched_entry = Some(entry);
+            break;
+        }
+    }
+
+    println!("matched_entry is_some: {}", matched_entry.is_some());
+
+    // Find entry matching our volume GUID
+    let interface_path = matched_entry.ok_or(EjectError::DeviceNotFound)?;
+    let interface_path_slice = &interface_path[..interface_path.len().saturating_sub(1)];
+    let interface_path = String::from_utf16_lossy(&interface_path_slice);
+
+    // Get device instance ID
+    let device_instid: String = interface_path
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&interface_path)
+        .rsplit_once('#')
+        .map(|(prefix, _guid)| prefix)
+        .unwrap_or(&interface_path)
+        .replace('#', r"\");
+
+    println!("device_instid: {:?}", device_instid);
+
+    // Back to intermediate representation
+    let mut device_instid = str_to_utf16vec(&device_instid);
+    device_instid.push(0u16);
 
     // Locate device node
     let mut dev_inst: u32 = 0;
     let locate_result = unsafe {
         CM_Locate_DevNodeW(
             &mut dev_inst,
-            PCWSTR(interface_path.as_ptr()),
+            PCWSTR(device_instid.as_ptr()),
             CM_LOCATE_DEVNODE_NORMAL,
         )
     };
+
+    println!("locate_result: {:?}", locate_result);
 
     if locate_result != CONFIGRET(0) {
         return Err(EjectError::DeviceNotFound);
@@ -235,4 +301,31 @@ fn request_eject(devinst: u32) -> Result<(), EjectError> {
         CONFIGRET(0) => Ok(()),
         _ => Err(EjectError::EjectFailed),
     }
+}
+
+/// Queries a device number from its mount point.
+fn query_device_number(mount_point: &str) -> Result<STORAGE_DEVICE_NUMBER, EjectError> {
+    let handle = open_volume(mount_point)?;
+    let mut device_number: STORAGE_DEVICE_NUMBER = unsafe { std::mem::zeroed() };
+    let mut output_size: u32 = 0;
+
+    let result = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_STORAGE_GET_DEVICE_NUMBER,
+            None,
+            0,
+            Some(&mut device_number as *mut _ as *mut _),
+            std::mem::size_of::<STORAGE_DEVICE_NUMBER>() as u32,
+            Some(&mut output_size as *mut u32),
+            None,
+        )
+    };
+    unsafe { _ = CloseHandle(handle) };
+
+    if result.is_err() {
+        return Err(EjectError::DeviceNotFound);
+    }
+
+    Ok(device_number)
 }
