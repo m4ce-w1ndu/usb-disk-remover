@@ -1,4 +1,7 @@
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::{
+    Foundation::HANDLE,
+    System::{IO::DeviceIoControl, Ioctl::FSCTL_LOCK_VOLUME},
+};
 
 use crate::drives::RemovableDrive;
 
@@ -11,13 +14,22 @@ pub enum EjectError {
     DeviceNotFound,
 }
 
-/// Ejects the device leveraging Windows' removable device API.
+/// Ejects the device leveraging Windows' PnP manager.
 pub fn eject_drive(drive: &RemovableDrive) -> Result<(), EjectError> {
     todo!()
 }
 
+/// Locks the volume using DeviceIoControl.
 fn lock_volume(handle: HANDLE) -> Result<(), EjectError> {
-    todo!()
+    // Call DeviceIoControl without buffers and FSCTL_LOCK_VOLUME
+    let result =
+        unsafe { DeviceIoControl(handle, FSCTL_LOCK_VOLUME, None, 0, None, 0, None, None) };
+
+    if result.is_err() {
+        Err(EjectError::LockFailed)
+    } else {
+        Ok(())
+    }
 }
 
 fn dismount_volume(handle: HANDLE) -> Result<(), EjectError> {
