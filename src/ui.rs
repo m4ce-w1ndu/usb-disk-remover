@@ -17,7 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ,
 };
-use windows::Win32::UI::Controls::SetWindowTheme;
+use windows::Win32::UI::Controls::{IMAGELIST_CREATION_FLAGS, ImageList_Create, SetWindowTheme};
 use windows::Win32::UI::Shell::ExtractIconExW;
 use windows::Win32::UI::WindowsAndMessaging::{
     GCLP_HBRBACKGROUND, HICON, SendMessageW, SetClassLongPtrW, WM_SETICON,
@@ -28,6 +28,8 @@ const LVM_SETBKCOLOR: u32 = 0x1001;
 const LVM_SETTEXTCOLOR: u32 = 0x1024;
 const LVM_SETTEXTBKCOLOR: u32 = 0x1026;
 const LVM_GETHEADER: u32 = 0x101F;
+const LVM_SETIMAGELIST: u32 = 0x1003;
+const LVSIL_SMALL: usize = 1;
 
 const WM_SETTINGCHANGE: u32 = 0x001A;
 const WM_ERASEBKGND: u32 = 0x0014;
@@ -204,7 +206,6 @@ impl App {
         }
 
         let dark_explorer: Vec<u16> = "DarkMode_Explorer\0".encode_utf16().collect();
-        let dark_cfd: Vec<u16> = "DarkMode_CFD\0".encode_utf16().collect();
         let dark_items: Vec<u16> = "DarkMode_ItemsView\0".encode_utf16().collect();
         // Passing an empty string to SetWindowTheme resets the control to its default theme.
         let reset: Vec<u16> = "\0".encode_utf16().collect();
@@ -278,11 +279,12 @@ impl App {
             }
         }
 
-        // Button
+        // Button — DarkMode_Explorer gives push buttons the correct dark surface;
+        // DarkMode_CFD is for ComboBox/Edit controls and leaves buttons white.
         if let nwg::ControlHandle::Hwnd(bhwnd) = self.remove_button.handle {
             unsafe {
                 let theme = if dark {
-                    PCWSTR(dark_cfd.as_ptr())
+                    PCWSTR(dark_explorer.as_ptr())
                 } else {
                     PCWSTR(reset.as_ptr())
                 };
@@ -361,6 +363,22 @@ impl App {
                 width: Some(340),
                 text: Some("Device".to_string()),
             });
+
+            // Set row height via a 1×28 ImageList — the standard Win32 trick for
+            // report-view row height (column width is irrelevant, only cy matters).
+            if let nwg::ControlHandle::Hwnd(lhwnd) = self.drive_list.handle {
+                unsafe {
+                    let himl = ImageList_Create(1, 28, IMAGELIST_CREATION_FLAGS(0x20), 0, 0);
+                    if !himl.is_invalid() {
+                        SendMessageW(
+                            HWND(lhwnd as _),
+                            LVM_SETIMAGELIST,
+                            Some(WPARAM(LVSIL_SMALL)),
+                            Some(LPARAM(himl.0)),
+                        );
+                    }
+                }
+            }
         }
 
         self.drive_list.clear();
