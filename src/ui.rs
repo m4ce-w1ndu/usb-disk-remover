@@ -10,8 +10,10 @@ use crate::eject::eject_drive;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, FillRect, GetSysColor, HDC, HBRUSH, HGDIOBJ, InvalidateRect,
-    SYS_COLOR_INDEX,
+    BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW,
+    DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE, DT_VCENTER, EndPaint, FillRect, GetSysColor, HDC,
+    HBRUSH, HGDIOBJ, InvalidateRect, PAINTSTRUCT, SetBkMode, SetTextColor, SYS_COLOR_INDEX,
+    TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::Win32::System::Registry::{
@@ -30,9 +32,12 @@ const LVM_SETTEXTBKCOLOR: u32 = 0x1026;
 const LVM_GETHEADER: u32 = 0x101F;
 const LVM_SETIMAGELIST: u32 = 0x1003;
 const LVSIL_SMALL: usize = 1;
+const SB_SETBKCOLOR: u32 = 0x2001; // CCM_SETBKCOLOR = CCM_FIRST (0x2000) + 1
 
+const WM_PAINT: u32 = 0x000F;
 const WM_SETTINGCHANGE: u32 = 0x001A;
 const WM_ERASEBKGND: u32 = 0x0014;
+const SB_GETTEXTW: u32 = 0x040D; // WM_USER + 13
 
 // COLOR_WINDOW = 5, COLOR_WINDOWTEXT = 8 (Win32 SYS_COLOR_INDEX constants)
 const COLOR_WINDOW: SYS_COLOR_INDEX = SYS_COLOR_INDEX(5);
@@ -133,6 +138,9 @@ pub struct App {
     // Keeps the ListView WM_ERASEBKGND handler alive for the window's lifetime.
     // This intercepts UxTheme's background paint so the dark color is always correct.
     list_handler: RefCell<Option<nwg::RawEventHandler>>,
+
+    // Same for the status bar — SB_SETBKCOLOR alone is ignored while UxTheme is active.
+    sb_handler: RefCell<Option<nwg::RawEventHandler>>,
 }
 
 impl App {
@@ -188,6 +196,69 @@ impl App {
             },
         );
         *self.list_handler.borrow_mut() = list_raw.ok();
+
+        // Status bar: intercept WM_PAINT so we own the full paint cycle.
+        // WM_ERASEBKGND alone is not enough — the control repaints its background
+        // white in WM_PAINT even when UxTheme is disabled and SB_SETBKCOLOR is set.
+        // In light mode we return None so native rendering runs unchanged.
+        let sb_raw = nwg::bind_raw_event_handler(
+            &self.status_bar.handle,
+            0x1_0003,
+            move |hwnd, msg, _wparam, _| {
+                if msg == WM_ERASEBKGND {
+                    // Suppress the default background erase; WM_PAINT fills it.
+                    return Some(1);
+                }
+                if msg == WM_PAINT {
+                    if !is_dark_mode() {
+                        return None; // native rendering is correct in light mode
+                    }
+                    unsafe {
+                        let hwnd_w = HWND(hwnd as *mut _);
+                        let mut ps: PAINTSTRUCT = std::mem::zeroed();
+                        let hdc = BeginPaint(hwnd_w, &mut ps);
+
+                        // Dark background
+                        let brush = CreateSolidBrush(COLORREF(0x00191919));
+                        let mut client: RECT = std::mem::zeroed();
+                        let _ = GetClientRect(hwnd_w, &mut client);
+                        FillRect(hdc, &client, brush);
+                        let _ = DeleteObject(HGDIOBJ(brush.0));
+
+                        // Text from part 0 in white
+                        let mut buf = [0u16; 512];
+                        let res = SendMessageW(
+                            hwnd_w,
+                            SB_GETTEXTW,
+                            Some(WPARAM(0)),
+                            Some(LPARAM(buf.as_mut_ptr() as isize)),
+                        );
+                        let text_len = (res.0 as u32 & 0xFFFF) as usize;
+                        if text_len > 0 && text_len <= 512 {
+                            SetTextColor(hdc, COLORREF(0x00FFFFFF));
+                            SetBkMode(hdc, TRANSPARENT);
+                            let mut tr = RECT {
+                                left: client.left + 4,
+                                top: client.top,
+                                right: client.right - 4,
+                                bottom: client.bottom,
+                            };
+                            DrawTextW(
+                                hdc,
+                                &mut buf[..text_len],
+                                &mut tr,
+                                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                            );
+                        }
+
+                        let _ = EndPaint(hwnd_w, &ps);
+                    }
+                    return Some(0);
+                }
+                None
+            },
+        );
+        *self.sb_handler.borrow_mut() = sb_raw.ok();
     }
 
     fn apply_theme(&self) {
@@ -292,15 +363,20 @@ impl App {
             }
         }
 
-        // Status bar
+        // Status bar — same pattern as the ListView: UxTheme owns the paint surface
+        // and ignores SB_SETBKCOLOR while visual styles are active. The space trick
+        // opts the control out of themed rendering so SB_SETBKCOLOR takes effect.
+        // CLR_DEFAULT (0xFF000000) restores the system colour in light mode.
         if let nwg::ControlHandle::Hwnd(sbhwnd) = self.status_bar.handle {
+            let sbhwnd_w = HWND(sbhwnd as _);
             unsafe {
-                let theme = if dark {
-                    PCWSTR(dark_explorer.as_ptr())
+                if dark {
+                    let _ = SetWindowTheme(sbhwnd_w, PCWSTR(no_theme.as_ptr()), PCWSTR::null());
                 } else {
-                    PCWSTR(reset.as_ptr())
-                };
-                let _ = SetWindowTheme(HWND(sbhwnd as _), theme, PCWSTR::null());
+                    let _ = SetWindowTheme(sbhwnd_w, PCWSTR::null(), PCWSTR::null());
+                }
+                let bg = if dark { LPARAM(0x00191919) } else { LPARAM(0xFF000000_u32 as isize) };
+                SendMessageW(sbhwnd_w, SB_SETBKCOLOR, Some(WPARAM(0)), Some(bg));
             }
         }
 
@@ -309,6 +385,9 @@ impl App {
             let _ = InvalidateRect(Some(hwnd), None, true);
             if let nwg::ControlHandle::Hwnd(lhwnd) = self.drive_list.handle {
                 let _ = InvalidateRect(Some(HWND(lhwnd as _)), None, true);
+            }
+            if let nwg::ControlHandle::Hwnd(sbhwnd) = self.status_bar.handle {
+                let _ = InvalidateRect(Some(HWND(sbhwnd as _)), None, true);
             }
         }
 
