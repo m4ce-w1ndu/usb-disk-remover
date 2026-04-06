@@ -7,9 +7,16 @@ use std::cell::RefCell;
 use crate::drives::{enumerate_drives, RemovableDrive};
 use crate::eject::eject_drive;
 
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
-use windows::Win32::Graphics::Gdi::{CreateSolidBrush, HBRUSH};
+use windows::Win32::Graphics::Gdi::{
+    CreateSolidBrush, DeleteObject, FillRect, GetSysColor, HDC, HBRUSH, HGDIOBJ, InvalidateRect,
+    SYS_COLOR_INDEX,
+};
+use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+use windows::Win32::System::Registry::{
+    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ,
+};
 use windows::Win32::UI::Controls::SetWindowTheme;
 use windows::Win32::UI::Shell::ExtractIconExW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -17,8 +24,55 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PCWSTR;
 
-// LVM_FIRST + 31: retrieves the header control handle from a ListView
+const LVM_SETBKCOLOR: u32 = 0x1001;
+const LVM_SETTEXTCOLOR: u32 = 0x1024;
+const LVM_SETTEXTBKCOLOR: u32 = 0x1026;
 const LVM_GETHEADER: u32 = 0x101F;
+
+const WM_SETTINGCHANGE: u32 = 0x001A;
+const WM_ERASEBKGND: u32 = 0x0014;
+
+// COLOR_WINDOW = 5, COLOR_WINDOWTEXT = 8 (Win32 SYS_COLOR_INDEX constants)
+const COLOR_WINDOW: SYS_COLOR_INDEX = SYS_COLOR_INDEX(5);
+const COLOR_WINDOWTEXT: SYS_COLOR_INDEX = SYS_COLOR_INDEX(8);
+
+/// Returns true when the user has Windows dark mode enabled for apps.
+fn is_dark_mode() -> bool {
+    let path: Vec<u16> =
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+            .encode_utf16()
+            .collect();
+    let value: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
+
+    unsafe {
+        let mut hkey = std::mem::zeroed();
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(path.as_ptr()),
+            None,
+            KEY_READ,
+            &mut hkey,
+        )
+        .is_err()
+        {
+            return false; // can't read registry → assume light
+        }
+
+        let mut data: u32 = 1; // default: light mode
+        let mut size = std::mem::size_of::<u32>() as u32;
+        let _ = RegQueryValueExW(
+            hkey,
+            PCWSTR(value.as_ptr()),
+            None,
+            None,
+            Some(&mut data as *mut u32 as *mut u8),
+            Some(&mut size),
+        );
+        let _ = RegCloseKey(hkey);
+
+        data == 0 // 0 = dark, 1 = light
+    }
+}
 
 #[derive(Default, NwgUi)]
 pub struct App {
@@ -32,7 +86,8 @@ pub struct App {
     #[nwg_control(
         list_style: nwg::ListViewStyle::Detailed,
         focus: true,
-        ex_flags: nwg::ListViewExFlags::FULL_ROW_SELECT | nwg::ListViewExFlags::GRID
+        ex_flags: nwg::ListViewExFlags::FULL_ROW_SELECT | nwg::ListViewExFlags::GRID,
+        double_buffer: false
     )]
     #[nwg_events(
         OnListViewDoubleClick: [App::on_remove],
@@ -69,24 +124,81 @@ pub struct App {
     status_bar: nwg::StatusBar,
 
     drives: RefCell<Vec<RemovableDrive>>,
+
+    // Keeps the WM_SETTINGCHANGE raw handler alive for the window's lifetime.
+    handler: RefCell<Option<nwg::RawEventHandler>>,
+
+    // Keeps the ListView WM_ERASEBKGND handler alive for the window's lifetime.
+    // This intercepts UxTheme's background paint so the dark color is always correct.
+    list_handler: RefCell<Option<nwg::RawEventHandler>>,
 }
 
 impl App {
     fn on_init(&self) {
-        self.apply_dark_mode();
+        self.apply_theme();
         self.load_drives();
+
+        // Re-apply the theme whenever the user switches dark/light mode.
+        // WM_SETTINGCHANGE (0x001A) with lParam → "ImmersiveColorSet" fires on
+        // every Windows color-scheme change.  We re-apply on any settings change;
+        // the cost is negligible since it only triggers rarely.
+        let self_ptr = self as *const App;
+        let raw = nwg::bind_raw_event_handler(
+            &self.window.handle,
+            0x1_0001, // must be > 0xFFFF (NWG reserves 0x0000–0xFFFF)
+            move |_hwnd, msg, _w, _l| {
+                if msg == WM_SETTINGCHANGE {
+                    // SAFETY: self_ptr is valid for the lifetime of the App struct.
+                    // The RawEventHandler is stored in App::handler, so the closure
+                    // cannot outlive the App.
+                    unsafe { (*self_ptr).apply_theme() };
+                }
+                None
+            },
+        );
+        *self.handler.borrow_mut() = raw.ok();
+
+        // Intercept WM_ERASEBKGND on the ListView so we own the background paint.
+        // Without this, UxTheme (applied via DarkMode_Explorer) paints the background
+        // with its own white color, overriding LVM_SETBKCOLOR.
+        let list_raw = nwg::bind_raw_event_handler(
+            &self.drive_list.handle,
+            0x1_0002,
+            move |hwnd, msg, wparam, _| {
+                if msg == WM_ERASEBKGND {
+                    let color = if is_dark_mode() {
+                        COLORREF(0x00191919)
+                    } else {
+                        unsafe { COLORREF(GetSysColor(COLOR_WINDOW)) }
+                    };
+                    unsafe {
+                        let dc = HDC(wparam as *mut _);
+                        let hwnd_w = HWND(hwnd as *mut _);
+                        let brush = CreateSolidBrush(color);
+                        let mut rect: RECT = std::mem::zeroed();
+                        let _ = GetClientRect(hwnd_w, &mut rect);
+                        FillRect(dc, &rect, brush);
+                        let _ = DeleteObject(HGDIOBJ(brush.0));
+                    }
+                    return Some(1); // background handled
+                }
+                None
+            },
+        );
+        *self.list_handler.borrow_mut() = list_raw.ok();
     }
 
-    fn apply_dark_mode(&self) {
+    fn apply_theme(&self) {
+        let dark = is_dark_mode();
         let hwnd = HWND(self.window.handle.hwnd().unwrap() as _);
 
-        // Enable dark title bar via DWM
-        let dark: u32 = 1;
+        // Dark/light title bar via DWM
+        let dark_flag: u32 = if dark { 1 } else { 0 };
         unsafe {
             let _ = DwmSetWindowAttribute(
                 hwnd,
                 DWMWA_USE_IMMERSIVE_DARK_MODE,
-                &dark as *const u32 as *const _,
+                &dark_flag as *const u32 as *const _,
                 std::mem::size_of::<u32>() as u32,
             );
         }
@@ -94,59 +206,107 @@ impl App {
         let dark_explorer: Vec<u16> = "DarkMode_Explorer\0".encode_utf16().collect();
         let dark_cfd: Vec<u16> = "DarkMode_CFD\0".encode_utf16().collect();
         let dark_items: Vec<u16> = "DarkMode_ItemsView\0".encode_utf16().collect();
+        // Passing an empty string to SetWindowTheme resets the control to its default theme.
+        let reset: Vec<u16> = "\0".encode_utf16().collect();
+        // " " (a single space) as pszSubAppName disables visual styles on a control.
+        // With Common Controls v6 (required by the manifest), visual styles are always
+        // active and cause UxTheme to own all ListView painting, ignoring LVM_SETBKCOLOR.
+        // The space trick opts the control out of themed rendering so our LVM messages work.
+        let no_theme: Vec<u16> = " \0".encode_utf16().collect();
 
-        // Paint the window client area dark (#191919).
-        // SetClassLongPtrW changes the background brush for the window's class.
-        // Since NWG uses a unique class per window type and this app has only one
-        // main window, this is safe and avoids subclassing.
+        // Window background brush
         unsafe {
-            let brush: HBRUSH = CreateSolidBrush(COLORREF(0x00191919));
+            let bg = if dark {
+                COLORREF(0x00191919)
+            } else {
+                COLORREF(GetSysColor(COLOR_WINDOW))
+            };
+            let brush: HBRUSH = CreateSolidBrush(bg);
             let brush_val: isize = std::mem::transmute(brush);
             SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, brush_val);
         }
 
-        // Apply dark theme to the window itself (scrollbars, borders)
+        // Window scrollbars / borders
         unsafe {
-            let _ = SetWindowTheme(hwnd, PCWSTR(dark_explorer.as_ptr()), PCWSTR::null());
+            let theme = if dark {
+                PCWSTR(dark_explorer.as_ptr())
+            } else {
+                PCWSTR(reset.as_ptr())
+            };
+            let _ = SetWindowTheme(hwnd, theme, PCWSTR::null());
         }
 
-        // Dark theme for ListView and its header control
-        if let nwg::ControlHandle::Hwnd(list_hwnd) = self.drive_list.handle {
-            let list_hwnd = HWND(list_hwnd as _);
+        // ListView
+        if let nwg::ControlHandle::Hwnd(lhwnd) = self.drive_list.handle {
+            let lhwnd = HWND(lhwnd as _);
             unsafe {
-                let _ = SetWindowTheme(list_hwnd, PCWSTR(dark_explorer.as_ptr()), PCWSTR::null());
+                // Disable visual styles on the ListView body in dark mode. With Common
+                // Controls v6 active, UxTheme ignores LVM_SETBKCOLOR entirely; the space
+                // trick opts the control out so the LVM color messages below take effect.
+                // In light mode, restore the default theme (null, null).
+                if dark {
+                    let _ = SetWindowTheme(lhwnd, PCWSTR(no_theme.as_ptr()), PCWSTR::null());
+                } else {
+                    let _ = SetWindowTheme(lhwnd, PCWSTR::null(), PCWSTR::null());
+                }
 
-                // The ListView header is a separate child control — darken it too
-                let result = SendMessageW(list_hwnd, LVM_GETHEADER, Some(WPARAM(0)), Some(LPARAM(0)));
-                if result.0 != 0 {
-                    let _ = SetWindowTheme(
-                        HWND(result.0 as _),
-                        PCWSTR(dark_items.as_ptr()),
-                        PCWSTR::null(),
-                    );
+                let (bg, fg) = if dark {
+                    (COLORREF(0x00191919), COLORREF(0x00FFFFFF))
+                } else {
+                    (
+                        COLORREF(GetSysColor(COLOR_WINDOW)),
+                        COLORREF(GetSysColor(COLOR_WINDOWTEXT)),
+                    )
+                };
+                // Set both the list background and the per-row text background to the same
+                // color. Using CLR_NONE for SETTEXTBKCOLOR makes rows transparent, which
+                // exposes any theme-painted background beneath them.
+                SendMessageW(lhwnd, LVM_SETBKCOLOR, Some(WPARAM(0)), Some(LPARAM(bg.0 as isize)));
+                SendMessageW(lhwnd, LVM_SETTEXTBKCOLOR, Some(WPARAM(0)), Some(LPARAM(bg.0 as isize)));
+                SendMessageW(lhwnd, LVM_SETTEXTCOLOR, Some(WPARAM(0)), Some(LPARAM(fg.0 as isize)));
+
+                // Header control
+                let hdr = SendMessageW(lhwnd, LVM_GETHEADER, Some(WPARAM(0)), Some(LPARAM(0)));
+                if hdr.0 != 0 {
+                    let hdr_theme = if dark {
+                        PCWSTR(dark_items.as_ptr())
+                    } else {
+                        PCWSTR(reset.as_ptr())
+                    };
+                    let _ = SetWindowTheme(HWND(hdr.0 as _), hdr_theme, PCWSTR::null());
                 }
             }
         }
 
-        // Dark theme for button
-        if let nwg::ControlHandle::Hwnd(btn_hwnd) = self.remove_button.handle {
+        // Button
+        if let nwg::ControlHandle::Hwnd(bhwnd) = self.remove_button.handle {
             unsafe {
-                let _ = SetWindowTheme(
-                    HWND(btn_hwnd as _),
-                    PCWSTR(dark_cfd.as_ptr()),
-                    PCWSTR::null(),
-                );
+                let theme = if dark {
+                    PCWSTR(dark_cfd.as_ptr())
+                } else {
+                    PCWSTR(reset.as_ptr())
+                };
+                let _ = SetWindowTheme(HWND(bhwnd as _), theme, PCWSTR::null());
             }
         }
 
-        // Dark theme for status bar
-        if let nwg::ControlHandle::Hwnd(sb_hwnd) = self.status_bar.handle {
+        // Status bar
+        if let nwg::ControlHandle::Hwnd(sbhwnd) = self.status_bar.handle {
             unsafe {
-                let _ = SetWindowTheme(
-                    HWND(sb_hwnd as _),
-                    PCWSTR(dark_explorer.as_ptr()),
-                    PCWSTR::null(),
-                );
+                let theme = if dark {
+                    PCWSTR(dark_explorer.as_ptr())
+                } else {
+                    PCWSTR(reset.as_ptr())
+                };
+                let _ = SetWindowTheme(HWND(sbhwnd as _), theme, PCWSTR::null());
+            }
+        }
+
+        // Force a full repaint so the new background/colors take effect immediately.
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, true);
+            if let nwg::ControlHandle::Hwnd(lhwnd) = self.drive_list.handle {
+                let _ = InvalidateRect(Some(HWND(lhwnd as _)), None, true);
             }
         }
 
@@ -156,8 +316,6 @@ impl App {
     fn set_window_icon(&self) {
         let hwnd = HWND(self.window.handle.hwnd().unwrap() as _);
 
-        // Load the removable-drive icon from shell32.dll (index 7: removable storage).
-        // If the extraction fails the window simply keeps the default application icon.
         let shell32: Vec<u16> = "shell32.dll\0".encode_utf16().collect();
         unsafe {
             let mut large: HICON = std::mem::zeroed();
@@ -171,8 +329,6 @@ impl App {
                 1,
             );
 
-            // Use transmute to convert HICON to isize safely regardless of
-            // whether the inner type is isize or *mut c_void.
             let large_val: isize = std::mem::transmute(large);
             let small_val: isize = std::mem::transmute(small);
 
